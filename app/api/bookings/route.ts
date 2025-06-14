@@ -2,10 +2,15 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import nodemailer from 'nodemailer';
 
-// Initialize Supabase client
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-const supabase = createClient(supabaseUrl, supabaseServiceKey);
+// Initialize Supabase client only if environment variables are available
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+let supabase: any = null;
+
+if (supabaseUrl && supabaseServiceKey) {
+  supabase = createClient(supabaseUrl, supabaseServiceKey);
+}
 
 // Email configuration
 const createTransporter = () => {
@@ -201,6 +206,7 @@ const sendAdminNotification = async (transporter: any, bookingData: any) => {
           </ol>
         </div>
       </div>
+    </body>
     </html>
   `;
 
@@ -214,6 +220,17 @@ const sendAdminNotification = async (transporter: any, bookingData: any) => {
 
 export async function POST(request: NextRequest) {
   try {
+    // Check if this is a static export environment
+    if (process.env.NODE_ENV === 'production' && !supabase) {
+      return NextResponse.json(
+        { 
+          error: 'Booking system not configured for static deployment',
+          message: 'Please configure environment variables for database and email services'
+        },
+        { status: 503 }
+      );
+    }
+
     const body = await request.json();
     
     // Validate input data
@@ -228,29 +245,35 @@ export async function POST(request: NextRequest) {
     // Sanitize data
     const sanitizedData = sanitizeData(body);
 
-    // Store in database
-    const { data: booking, error: dbError } = await supabase
-      .from('bookings')
-      .insert([{
-        first_name: sanitizedData.fullName.split(' ')[0],
-        last_name: sanitizedData.fullName.split(' ').slice(1).join(' ') || '',
-        email: sanitizedData.email,
-        phone: sanitizedData.phone,
-        service: sanitizedData.serviceType,
-        preferred_date: sanitizedData.preferredDate,
-        preferred_time: sanitizedData.preferredTime,
-        project_details: sanitizedData.additionalNotes,
-        status: 'pending'
-      }])
-      .select()
-      .single();
+    let bookingId = null;
 
-    if (dbError) {
-      console.error('Database error:', dbError);
-      return NextResponse.json(
-        { error: 'Failed to save booking to database' },
-        { status: 500 }
-      );
+    // Store in database if Supabase is configured
+    if (supabase) {
+      const { data: booking, error: dbError } = await supabase
+        .from('bookings')
+        .insert([{
+          first_name: sanitizedData.fullName.split(' ')[0],
+          last_name: sanitizedData.fullName.split(' ').slice(1).join(' ') || '',
+          email: sanitizedData.email,
+          phone: sanitizedData.phone,
+          service: sanitizedData.serviceType,
+          preferred_date: sanitizedData.preferredDate,
+          preferred_time: sanitizedData.preferredTime,
+          project_details: sanitizedData.additionalNotes,
+          status: 'pending'
+        }])
+        .select()
+        .single();
+
+      if (dbError) {
+        console.error('Database error:', dbError);
+        return NextResponse.json(
+          { error: 'Failed to save booking to database' },
+          { status: 500 }
+        );
+      }
+
+      bookingId = booking.id;
     }
 
     // Send emails if SMTP is configured
@@ -274,7 +297,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       success: true,
       message: 'Booking submitted successfully',
-      bookingId: booking.id
+      bookingId: bookingId
     });
 
   } catch (error) {
